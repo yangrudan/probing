@@ -129,7 +129,7 @@ impl Widget for &App {
         let toplevel = Layout::vertical([Length(1), Min(0)]);
         let [header, body] = toplevel.areas(area);
         let [title_area, tab_area] =
-            Layout::horizontal([Length(10), Percentage(100)]).areas(header);
+            Layout::horizontal([Length(20), Percentage(100)]).areas(header);
         "Probing Panel".bold().render(title_area, buf);
         self.render_tabs(tab_area, buf);
         self.selected_tab.render(body, buf);

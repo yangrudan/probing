@@ -84,6 +84,7 @@ impl TaskStatsWorker {
             let mut iterations = config.iterations;
             while running.load(Ordering::SeqCst) {
                 if let Some(iter) = iterations.as_mut() {
+                    println!("Remaining iterations: {}", iter);
                     if *iter <= 0 {
                         break;
                     }
@@ -139,7 +140,7 @@ pub struct TaskStatsSchema {}
 
 impl CustomNamespace for TaskStatsSchema {
     fn name() -> &'static str {
-        "process"
+        "taskstats"
     }
 
     fn list() -> Vec<String> {
@@ -150,6 +151,7 @@ impl CustomNamespace for TaskStatsSchema {
     where
         Self: Sized,
     {
+        println!("!!!!Creating lazy table source for: {}", expr);
         match expr {
             "cpu" => Arc::new(probing_core::core::LazyTableSource {
                 name: expr.to_string(),
@@ -158,7 +160,7 @@ impl CustomNamespace for TaskStatsSchema {
                     Field::new("cpu_utime", DataType::Int64, false),
                     Field::new("cpu_stime", DataType::Int64, false),
                 ]))),
-                data: Default::default(),
+                data: TaskStatsSchema::data(expr),
             }),
             _ => Arc::new(probing_core::core::LazyTableSource {
                 name: expr.to_string(),
@@ -171,6 +173,7 @@ impl CustomNamespace for TaskStatsSchema {
     fn data(expr: &str) -> Vec<RecordBatch> {
         match expr {
             "cpu" => {
+                println!("!!!!Fetching CPU stats data for: {}", expr);
                 let time_series = TaskStatsWorker::instance().get_stats().unwrap();
                 let names = time_series.names.clone();
                 let batches = time_series_to_recordbatch(names, &time_series);

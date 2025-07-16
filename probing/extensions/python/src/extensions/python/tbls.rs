@@ -178,6 +178,7 @@ impl CustomNamespace for PythonNamespace {
 
     fn data(expr: &str) -> Vec<RecordBatch> {
         if expr == "backtrace" {
+            println!("!!!!Fetching BBBBBBBbacktrace data for: {}", expr);
             match Self::get_backtrace_data() {
                 Ok(batches) => batches,
                 Err(e) => {

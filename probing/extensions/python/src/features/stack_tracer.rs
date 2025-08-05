@@ -189,6 +189,7 @@ impl StackTracer for SignalTracer {
 
 pub fn backtrace_signal_handler() {
     let native_stacks = SignalTracer::get_native_stacks().unwrap_or_default();
+    println!("native stacks: {:?}", native_stacks);
 
     if !SignalTracer::try_send_native_frames_to_channel(
         native_stacks,
@@ -196,6 +197,16 @@ pub fn backtrace_signal_handler() {
     ) {
         log::error!("Signal handler: CRITICAL - Failed to send native stacks. Receiver might timeout or get incomplete data.");
     }
+}
+
+pub fn backtrace_signal_handler_v2() {
+    let native_stacks = SignalTracer::get_native_stacks().unwrap_or_default();
+    println!("native stacks: {:?}", native_stacks);
+    
+    let python_frames = get_python_stacks(tid);
+    let python_frames = python_frames.unwrap();
+    println!("python stacks: {:?}", python_frames);
+    
 }
 
 /// Define a static Mutex for the backtrace function

@@ -47,6 +47,8 @@ pprof = { version = "0.14.0", features = [
 lazy_static = "1.4.0"
 async-trait = "0.1.83"
 signal-hook-registry = "1.4.2"
+signal-hook = "0.3.18"
+libc = "0.2.147"
 
 [dev-dependencies]
 tokio = { workspace = true }

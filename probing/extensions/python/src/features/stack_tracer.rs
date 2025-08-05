@@ -203,7 +203,8 @@ pub fn backtrace_signal_handler_v2() {
     let native_stacks = SignalTracer::get_native_stacks().unwrap_or_default();
     println!("native stacks: {:?}", native_stacks);
     
-    let python_frames = get_python_stacks(tid);
+    let pid = nix::unistd::getpid().as_raw(); 
+    let python_frames = get_python_stacks(pid);
     let python_frames = python_frames.unwrap();
     println!("python stacks: {:?}", python_frames);
     

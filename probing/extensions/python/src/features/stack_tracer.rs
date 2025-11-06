@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use chrono::naive;
 use lazy_static::lazy_static;
 use nix::libc;
 use once_cell::sync::Lazy;
@@ -17,50 +18,104 @@ use chrono::Local;
 
 use super::super::extensions::python::get_python_stacks;
 
+use backtrace;
+use cpp_demangle::Symbol as CppSymbol;
+use std::ffi::c_void;
+
+/// A minimal, thread-safe representation of a captured frame.
+/// We store addresses as usize so they can be sent across threads safely.
+#[derive(Clone, Debug)]
+pub struct RawFrame {
+    /// instruction pointer
+    pub ip: usize,
+    /// symbol address (may be 0)
+    pub symbol_addr: usize,
+}
+
+
 #[async_trait]
 pub trait StackTracer: Send + Sync + std::fmt::Debug {
     fn trace(&self, tid: Option<i32>) -> Result<Vec<CallFrame>>;
+}
+
+/// Capture raw addresses using backtrace::trace.
+/// This function does as little work as possible: it only records numeric addresses
+/// (usize) so the returned Vec<RawFrame> is Send and can be handed to other threads.
+pub fn capture_raw_frames() -> Vec<RawFrame> {
+    let mut frames: Vec<RawFrame> = Vec::new();
+
+    backtrace::trace(|frame| {
+        let ip = frame.ip() as usize;
+        let symbol_addr = frame.symbol_address() as usize;
+        frames.push(RawFrame { ip, symbol_addr });
+        // continue tracing
+        true
+    });
+
+    frames
+}
+
+/// Resolve a list of RawFrame into human-readable CallFrame entries.
+/// This function does the heavier work: symbol resolution, demangling, file/line extraction.
+pub fn resolve_raw_frames(raw: &[RawFrame]) -> Vec<CallFrame> {
+    let mut frames: Vec<CallFrame> = Vec::with_capacity(raw.len());
+
+    for rf in raw {
+        // Choose the symbol resolution address: prefer symbol_addr if present, otherwise use ip.
+        let resolve_addr = if rf.symbol_addr != 0 {
+            rf.symbol_addr as *mut c_void
+        } else {
+            rf.ip as *mut c_void
+        };
+
+        // Default placeholders; will be filled inside the callback if available.
+        let mut func_name = None;
+        let mut file_name = None;
+        let mut lineno = None;
+
+        // backtrace::resolve is used to resolve a single address to symbol info.
+        backtrace::resolve(resolve_addr, |symbol| {
+            // function name (demangle if possible)
+            func_name = symbol.name().and_then(|name| {
+                name.as_str().map(|raw_name| {
+                    CppSymbol::new(raw_name)
+                        .ok()
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| raw_name.to_string())
+                })
+            });
+
+            // file name (as String)
+            file_name = symbol
+                .filename()
+                .map(|p| p.to_string_lossy().into_owned());
+
+            // line number
+            lineno = symbol.lineno().map(|n| n as i64);
+        });
+
+        // Fallback values if resolve didn't provide them
+        let ip_ptr = rf.ip as *mut c_void;
+        let func = func_name.unwrap_or_else(|| format!("unknown@{:p}", resolve_addr));
+        let file = file_name.unwrap_or_default();
+        let line = lineno.unwrap_or(0);
+
+        frames.push(CallFrame::CFrame {
+            ip: format!("{:p}", ip_ptr),
+            file,
+            func,
+            lineno: line,
+        });
+    }
+
+    frames
 }
 
 #[derive(Debug)]
 pub struct SignalTracer;
 
 impl SignalTracer {
-    fn get_native_stacks() -> Option<Vec<CallFrame>> {
-        let mut frames = vec![];
-        backtrace::trace(|frame| {
-            let ip = frame.ip();
-            let symbol_address = frame.symbol_address(); // Keep as *mut c_void for formatting
-            backtrace::resolve_frame(frame, |symbol| {
-                let func_name = symbol
-                    .name()
-                    .and_then(|name| name.as_str())
-                    .map(|raw_name| {
-                        cpp_demangle::Symbol::new(raw_name)
-                            .ok()
-                            .map(|demangled| demangled.to_string())
-                            .unwrap_or_else(|| raw_name.to_string())
-                    })
-                    .unwrap_or_else(|| format!("unknown@{symbol_address:p}"));
-
-                let file_name = symbol
-                    .filename()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-
-                frames.push(CallFrame::CFrame {
-                    ip: format!("{ip:p}"),
-                    file: file_name,
-                    func: func_name,
-                    lineno: symbol.lineno().unwrap_or(0) as i64,
-                });
-            });
-            true
-        });
-        Some(frames)
-    }
-
-    fn try_send_native_frames_to_channel(frames: Vec<CallFrame>, context_msg: &str) -> bool {
+    fn try_send_native_frames_to_channel(frames: Vec<RawFrame>, context_msg: &str) -> bool {
         log::debug!("Attempting to send native {} frames.", frames.len());
         match NATIVE_CALLSTACK_SENDER_SLOT.try_lock() {
             Ok(guard) => {
@@ -162,42 +217,45 @@ impl StackTracer for SignalTracer {
             anyhow::anyhow!("Failed to acquire backtrace lock: {}", e)
         })?;
 
-        // let (tx, rx) = mpsc::channel::<Vec<CallFrame>>();
-        // NATIVE_CALLSTACK_SENDER_SLOT
-        //     .try_lock()
-        //     .map_err(|err| {
-        //         log::error!("Failed to lock CALLSTACK_SENDER_SLOT: {err}");
-        //         anyhow::anyhow!("Failed to lock call stack sender slot")
-        //     })?
-        //     .replace(tx);
+        let (tx, rx) = mpsc::channel::<Vec<RawFrame>>();
+        NATIVE_CALLSTACK_SENDER_SLOT
+            .try_lock()
+            .map_err(|err| {
+                log::error!("Failed to lock CALLSTACK_SENDER_SLOT: {err}");
+                anyhow::anyhow!("Failed to lock call stack sender slot")
+            })?
+            .replace(tx);
 
-        // log::debug!("Sending SIGUSR2 signal to process {pid} (thread: {tid})");
+        log::debug!("Sending SIGUSR2 signal to process {pid} (thread: {tid})");
 
-        // let ret = unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGUSR2) };
-        // if ret != 0 {
-        //     let last_error = std::io::Error::last_os_error();
-        //     let error_msg =
-        //         format!("Failed to send SIGUSR2 to process {pid} (thread: {tid}): {last_error}");
-        //     log::error!("{error_msg}");
-        //     return Err(anyhow::anyhow!(error_msg));
-        // }
+        let ret = unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGUSR2) };
+        if ret != 0 {
+            let last_error = std::io::Error::last_os_error();
+            let error_msg =
+                format!("Failed to send SIGUSR2 to process {pid} (thread: {tid}): {last_error}");
+            log::error!("{error_msg}");
+            return Err(anyhow::anyhow!(error_msg));
+        }
         let python_frames = get_python_stacks(tid);
 
         let python_frames = python_frames.unwrap();
         
-        // let cpp_frames = rx.recv_timeout(Duration::from_secs(2))?;
+        let cpp_raw_frames = rx.recv_timeout(Duration::from_secs(2))?;
+        let cpp_frames = resolve_raw_frames(&cpp_raw_frames);
 
-        Ok(python_frames)
+        // Ok(python_frames)
 
-        // Ok(Self::merge_python_native_stacks(python_frames, cpp_frames))
+        Ok(Self::merge_python_native_stacks(python_frames, cpp_frames))
     }
 }
 
 pub fn backtrace_signal_handler() {
-    let native_stacks = SignalTracer::get_native_stacks().unwrap_or_default();
+    // let native_stacks = SignalTracer::get_native_stacks().unwrap_or_default();
+    // let native_stacks = vec![];
+    let raw = capture_raw_frames();
 
     if !SignalTracer::try_send_native_frames_to_channel(
-        native_stacks,
+        raw,
         "native stacks (initial send)",
     ) {
         log::error!("Signal handler: CRITICAL - Failed to send native stacks. Receiver might timeout or get incomplete data.");
@@ -215,7 +273,8 @@ pub fn exit_signal_handler() {
     // Get rank number, use "unknown" if retrieval fails
     let rank = env::var("RANK").unwrap_or_else(|_| "unknown".to_string());
 
-    let cpp_frames = SignalTracer::get_native_stacks().unwrap_or_default();
+    //let cpp_frames = SignalTracer::get_native_stacks().unwrap_or_default();
+    let cpp_frames = vec![];
     let python_frames = get_python_stacks(pid);
     let python_frames = python_frames.unwrap();
 
@@ -263,5 +322,5 @@ pub fn exit_signal_handler() {
 /// Define a static Mutex for the backtrace function
 static BACKTRACE_MUTEX: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
-pub static NATIVE_CALLSTACK_SENDER_SLOT: Lazy<Mutex<Option<mpsc::Sender<Vec<CallFrame>>>>> =
+pub static NATIVE_CALLSTACK_SENDER_SLOT: Lazy<Mutex<Option<mpsc::Sender<Vec<RawFrame>>>>> =
     Lazy::new(|| Mutex::new(None));

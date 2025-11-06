@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Once;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -162,17 +163,27 @@ pub fn backtrace_signal_handler() {
     let count_u32 = count as u32;
     let count_bytes = count_u32.to_ne_bytes();
     
-    unsafe {
-        libc::write(write_fd, count_bytes.as_ptr() as *const libc::c_void, 4);
+    // Write count with error checking
+    let written = unsafe {
+        libc::write(write_fd, count_bytes.as_ptr() as *const libc::c_void, 4)
+    };
+    
+    if written != 4 {
+        return; // Failed to write count, abort
     }
     
-    // Write frame addresses
-    let frame_size = std::mem::size_of::<*mut libc::c_void>();
+    // Write frame addresses (using usize for consistency)
+    let addr_size = std::mem::size_of::<usize>();
     for i in 0..count {
         let addr = buffer[i] as usize;
         let addr_bytes = addr.to_ne_bytes();
-        unsafe {
-            libc::write(write_fd, addr_bytes.as_ptr() as *const libc::c_void, frame_size);
+        
+        let written = unsafe {
+            libc::write(write_fd, addr_bytes.as_ptr() as *const libc::c_void, addr_size)
+        };
+        
+        if written != addr_size as isize {
+            return; // Failed to write frame, abort to prevent partial data
         }
     }
 }
@@ -184,22 +195,36 @@ static BACKTRACE_MUTEX: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync:
 static PIPE_READ_FD: AtomicI32 = AtomicI32::new(-1);
 static PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
+// Ensure pipe is initialized only once
+static PIPE_INIT: Once = Once::new();
+
 // Maximum number of frames to capture
 const MAX_FRAMES: usize = 256;
 
 /// Initialize the pipe for signal-safe communication
 fn init_pipe() -> Result<()> {
-    let mut fds: [libc::c_int; 2] = [0, 0];
-    let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    let mut result = Ok(());
     
-    if ret != 0 {
-        return Err(anyhow::anyhow!("Failed to create pipe: {}", std::io::Error::last_os_error()));
+    PIPE_INIT.call_once(|| {
+        let mut fds: [libc::c_int; 2] = [0, 0];
+        // Use O_CLOEXEC but not O_NONBLOCK to ensure writes don't fail in signal handler
+        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        
+        if ret != 0 {
+            result = Err(anyhow::anyhow!("Failed to create pipe: {}", std::io::Error::last_os_error()));
+            return;
+        }
+        
+        PIPE_READ_FD.store(fds[0], Ordering::SeqCst);
+        PIPE_WRITE_FD.store(fds[1], Ordering::SeqCst);
+    });
+    
+    // Check if initialization succeeded
+    if PIPE_READ_FD.load(Ordering::SeqCst) < 0 {
+        return Err(anyhow::anyhow!("Pipe initialization failed"));
     }
     
-    PIPE_READ_FD.store(fds[0], Ordering::SeqCst);
-    PIPE_WRITE_FD.store(fds[1], Ordering::SeqCst);
-    
-    Ok(())
+    result
 }
 
 /// Read raw frame addresses from the pipe
@@ -247,8 +272,9 @@ fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<*mut libc::c_void>> 
     }
     
     // Read frame addresses (count * sizeof(usize))
-    let frame_size = std::mem::size_of::<*mut libc::c_void>();
-    let total_bytes = count * frame_size;
+    // Use size_of::<usize> consistently as addresses are serialized as usize
+    let addr_size = std::mem::size_of::<usize>();
+    let total_bytes = count * addr_size;
     let mut buffer = vec![0u8; total_bytes];
     
     let mut bytes_read = 0;
@@ -275,9 +301,9 @@ fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<*mut libc::c_void>> 
     // Convert bytes to frame addresses
     let mut frames = Vec::with_capacity(count);
     for i in 0..count {
-        let offset = i * frame_size;
+        let offset = i * addr_size;
         let mut addr_bytes = [0u8; std::mem::size_of::<usize>()];
-        addr_bytes.copy_from_slice(&buffer[offset..offset + frame_size]);
+        addr_bytes.copy_from_slice(&buffer[offset..offset + addr_size]);
         let addr = usize::from_ne_bytes(addr_bytes);
         frames.push(addr as *mut libc::c_void);
     }

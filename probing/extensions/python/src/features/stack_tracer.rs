@@ -1,7 +1,5 @@
 use std::collections::HashSet;
-use std::sync::mpsc;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -22,54 +20,6 @@ pub trait StackTracer: Send + Sync + std::fmt::Debug {
 pub struct SignalTracer;
 
 impl SignalTracer {
-    fn get_native_stacks() -> Option<Vec<CallFrame>> {
-        let mut frames = vec![];
-        backtrace::trace(|frame| {
-            let ip = frame.ip();
-            let symbol_address = frame.symbol_address(); // Keep as *mut c_void for formatting
-            backtrace::resolve_frame(frame, |symbol| {
-                let func_name = symbol
-                    .name()
-                    .and_then(|name| name.as_str())
-                    .map(|raw_name| {
-                        cpp_demangle::Symbol::new(raw_name)
-                            .ok()
-                            .map(|demangled| demangled.to_string())
-                            .unwrap_or_else(|| raw_name.to_string())
-                    })
-                    .unwrap_or_else(|| format!("unknown@{symbol_address:p}"));
-
-                let file_name = symbol
-                    .filename()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-
-                frames.push(CallFrame::CFrame {
-                    ip: format!("{ip:p}"),
-                    file: file_name,
-                    func: func_name,
-                    lineno: symbol.lineno().unwrap_or(0) as i64,
-                });
-            });
-            true
-        });
-        Some(frames)
-    }
-
-    fn send_frames(frames: Vec<CallFrame>) -> Result<()> {
-        match NATIVE_CALLSTACK_SENDER_SLOT.try_lock() {
-            Ok(guard) => {
-                if let Some(sender) = guard.as_ref() {
-                    sender.send(frames)?;
-                    Ok(())
-                } else {
-                    Err(anyhow::anyhow!("No sender available in channel slot"))
-                }
-            }
-            Err(_) => Err(anyhow::anyhow!("Failed to send frames via channel")),
-        }
-    }
-
     fn merge_python_native_stacks(
         python_stacks: Vec<CallFrame>,
         native_stacks: Vec<CallFrame>,
@@ -149,14 +99,10 @@ impl StackTracer for SignalTracer {
             anyhow::anyhow!("Failed to acquire backtrace lock: {}", e)
         })?;
 
-        let (tx, rx) = mpsc::channel::<Vec<CallFrame>>();
-        NATIVE_CALLSTACK_SENDER_SLOT
-            .try_lock()
-            .map_err(|err| {
-                log::error!("Failed to lock CALLSTACK_SENDER_SLOT: {err}");
-                anyhow::anyhow!("Failed to lock call stack sender slot")
-            })?
-            .replace(tx);
+        // Initialize pipe if not already done
+        if PIPE_READ_FD.load(Ordering::SeqCst) < 0 {
+            init_pipe()?;
+        }
 
         log::debug!("Sending SIGUSR2 signal to process {pid} (thread: {tid})");
 
@@ -174,8 +120,12 @@ impl StackTracer for SignalTracer {
             return Err(anyhow::anyhow!(error_msg));
         }
 
-        let native_frames = rx.recv_timeout(Duration::from_secs(2))?;
-        let python_frames = rx.recv_timeout(Duration::from_secs(2))?;
+        // Read native frames from pipe (timeout in milliseconds)
+        let native_raw_frames = read_raw_frames_from_pipe(2000)?;
+        let native_frames = resolve_frames(native_raw_frames);
+        
+        // Get Python frames directly
+        let python_frames = get_python_stacks_raw();
 
         Ok(Self::merge_python_native_stacks(
             python_frames,
@@ -185,18 +135,189 @@ impl StackTracer for SignalTracer {
 }
 
 pub fn backtrace_signal_handler() {
-    let native_stacks = SignalTracer::get_native_stacks().unwrap_or_default();
-    let python_stacks = get_python_stacks_raw();
-    if SignalTracer::send_frames(native_stacks).is_err() {
-        log::error!("Signal handler: CRITICAL - Failed to send native stacks. Receiver might timeout or get incomplete data.");
+    // Signal-safe backtrace collection
+    let write_fd = PIPE_WRITE_FD.load(Ordering::SeqCst);
+    if write_fd < 0 {
+        return; // Pipe not initialized, cannot send data
     }
-    if SignalTracer::send_frames(python_stacks).is_err() {
-        log::error!("Signal handler: CRITICAL - Failed to send Python stacks. Receiver might timeout or get incomplete data.");
+    
+    // Pre-allocate buffer for frame addresses
+    let mut buffer: [*mut libc::c_void; MAX_FRAMES] = [std::ptr::null_mut(); MAX_FRAMES];
+    let mut count: usize = 0;
+    
+    // Use trace_unsynchronized for async-signal-safe backtrace
+    unsafe {
+        backtrace::trace_unsynchronized(|frame| {
+            if count < MAX_FRAMES {
+                buffer[count] = frame.ip();
+                count += 1;
+                true
+            } else {
+                false
+            }
+        });
+    }
+    
+    // Write count as u32 (4 bytes)
+    let count_u32 = count as u32;
+    let count_bytes = count_u32.to_ne_bytes();
+    
+    unsafe {
+        libc::write(write_fd, count_bytes.as_ptr() as *const libc::c_void, 4);
+    }
+    
+    // Write frame addresses
+    let frame_size = std::mem::size_of::<*mut libc::c_void>();
+    for i in 0..count {
+        let addr = buffer[i] as usize;
+        let addr_bytes = addr.to_ne_bytes();
+        unsafe {
+            libc::write(write_fd, addr_bytes.as_ptr() as *const libc::c_void, frame_size);
+        }
     }
 }
 
 /// Define a static Mutex for the backtrace function
 static BACKTRACE_MUTEX: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
 
-pub static NATIVE_CALLSTACK_SENDER_SLOT: Lazy<Mutex<Option<mpsc::Sender<Vec<CallFrame>>>>> =
-    Lazy::new(|| Mutex::new(None));
+// Pipe file descriptors for async-signal-safe communication
+static PIPE_READ_FD: AtomicI32 = AtomicI32::new(-1);
+static PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+
+// Maximum number of frames to capture
+const MAX_FRAMES: usize = 256;
+
+/// Initialize the pipe for signal-safe communication
+fn init_pipe() -> Result<()> {
+    let mut fds: [libc::c_int; 2] = [0, 0];
+    let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    
+    if ret != 0 {
+        return Err(anyhow::anyhow!("Failed to create pipe: {}", std::io::Error::last_os_error()));
+    }
+    
+    PIPE_READ_FD.store(fds[0], Ordering::SeqCst);
+    PIPE_WRITE_FD.store(fds[1], Ordering::SeqCst);
+    
+    Ok(())
+}
+
+/// Read raw frame addresses from the pipe
+fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<*mut libc::c_void>> {
+    let read_fd = PIPE_READ_FD.load(Ordering::SeqCst);
+    if read_fd < 0 {
+        return Err(anyhow::anyhow!("Pipe not initialized"));
+    }
+    
+    // Use libc::poll to wait for data with timeout
+    let mut pollfd = libc::pollfd {
+        fd: read_fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    
+    let poll_ret = unsafe { libc::poll(&mut pollfd as *mut libc::pollfd, 1, timeout_ms) };
+    
+    if poll_ret < 0 {
+        return Err(anyhow::anyhow!("Poll failed: {}", std::io::Error::last_os_error()));
+    }
+    
+    if poll_ret == 0 {
+        return Err(anyhow::anyhow!("Timeout waiting for backtrace data"));
+    }
+    
+    // First read the count (u32 = 4 bytes)
+    let mut count_buf = [0u8; 4];
+    let count_bytes_read = unsafe {
+        libc::read(read_fd, count_buf.as_mut_ptr() as *mut libc::c_void, 4)
+    };
+    
+    if count_bytes_read < 0 {
+        return Err(anyhow::anyhow!("Failed to read frame count: {}", std::io::Error::last_os_error()));
+    }
+    
+    if count_bytes_read != 4 {
+        return Err(anyhow::anyhow!("Incomplete frame count read"));
+    }
+    
+    let count = u32::from_ne_bytes(count_buf) as usize;
+    
+    if count > MAX_FRAMES {
+        return Err(anyhow::anyhow!("Frame count exceeds maximum: {}", count));
+    }
+    
+    // Read frame addresses (count * sizeof(usize))
+    let frame_size = std::mem::size_of::<*mut libc::c_void>();
+    let total_bytes = count * frame_size;
+    let mut buffer = vec![0u8; total_bytes];
+    
+    let mut bytes_read = 0;
+    while bytes_read < total_bytes {
+        let n = unsafe {
+            libc::read(
+                read_fd,
+                buffer[bytes_read..].as_mut_ptr() as *mut libc::c_void,
+                total_bytes - bytes_read,
+            )
+        };
+        
+        if n < 0 {
+            return Err(anyhow::anyhow!("Failed to read frame data: {}", std::io::Error::last_os_error()));
+        }
+        
+        if n == 0 {
+            return Err(anyhow::anyhow!("Unexpected EOF while reading frames"));
+        }
+        
+        bytes_read += n as usize;
+    }
+    
+    // Convert bytes to frame addresses
+    let mut frames = Vec::with_capacity(count);
+    for i in 0..count {
+        let offset = i * frame_size;
+        let mut addr_bytes = [0u8; std::mem::size_of::<usize>()];
+        addr_bytes.copy_from_slice(&buffer[offset..offset + frame_size]);
+        let addr = usize::from_ne_bytes(addr_bytes);
+        frames.push(addr as *mut libc::c_void);
+    }
+    
+    Ok(frames)
+}
+
+/// Resolve raw frame addresses to CallFrame structures
+fn resolve_frames(raw_frames: Vec<*mut libc::c_void>) -> Vec<CallFrame> {
+    let mut frames = vec![];
+    
+    for frame_ptr in raw_frames {
+        let ip = frame_ptr;
+        let symbol_address = frame_ptr;
+        
+        backtrace::resolve(ip, |symbol| {
+            let func_name = symbol
+                .name()
+                .and_then(|name| name.as_str())
+                .map(|raw_name| {
+                    cpp_demangle::Symbol::new(raw_name)
+                        .ok()
+                        .map(|demangled| demangled.to_string())
+                        .unwrap_or_else(|| raw_name.to_string())
+                })
+                .unwrap_or_else(|| format!("unknown@{symbol_address:p}"));
+
+            let file_name = symbol
+                .filename()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
+            frames.push(CallFrame::CFrame {
+                ip: format!("{ip:p}"),
+                file: file_name,
+                func: func_name,
+                lineno: symbol.lineno().unwrap_or(0) as i64,
+            });
+        });
+    }
+    
+    frames
+}

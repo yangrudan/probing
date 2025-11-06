@@ -14,19 +14,19 @@ where
     };
 }
 
-fn register_segvsignal_handler() -> nix::Result<()> {
-    let sa = SigAction::new(
-        SigHandler::Handler(crate::features::stack_tracer::exit_segvsignal_handler),
-        SaFlags::SA_RESTART,  
-        SigSet::empty()       
-    );
-    
-    unsafe{
-        signal::sigaction(signal::SIGSEGV, &sa)?;
-    }
-    
-    Ok(())
-}
+// fn register_segvsignal_handler() -> nix::Result<()> {
+//     let sa = SigAction::new(
+//         SigHandler::Handler(crate::features::stack_tracer::exit_segvsignal_handler),
+//         SaFlags::SA_RESTART,
+//         SigSet::empty()
+//     );
+//
+//     unsafe{
+//         signal::sigaction(signal::SIGSEGV, &sa)?;
+//     }
+//
+//     Ok(())
+// }
 
 #[ctor]
 fn setup() {
@@ -34,13 +34,13 @@ fn setup() {
         nix::libc::SIGUSR2,
         crate::features::stack_tracer::backtrace_signal_handler,
     );
-    register_signal_handler(
-        nix::libc::SIGTERM,
-        crate::features::stack_tracer::exit_signal_handler,
-    );
-    register_signal_handler(
-        nix::libc::SIGUSR1,
-        crate::features::stack_tracer::exit_signal_handler,
-    );
-    register_segvsignal_handler();
+    // register_signal_handler(
+    //     nix::libc::SIGTERM,
+    //     crate::features::stack_tracer::exit_signal_handler,
+    // );
+    // register_signal_handler(
+    //     nix::libc::SIGUSR1,
+    //     crate::features::stack_tracer::exit_signal_handler,
+    // );
+    // register_segvsignal_handler();
 }

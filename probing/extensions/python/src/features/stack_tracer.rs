@@ -199,7 +199,7 @@ static PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 static PIPE_INIT: Once = Once::new();
 
 // Maximum number of frames to capture
-const MAX_FRAMES: usize = 256;
+const MAX_FRAMES: usize = 512;
 
 /// Initialize the pipe for signal-safe communication
 fn init_pipe() -> Result<()> {

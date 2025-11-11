@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -12,6 +13,159 @@ use once_cell::sync::Lazy;
 use probing_proto::prelude::CallFrame;
 
 use crate::features::vm_tracer::get_python_stacks_raw;
+
+// Pipe file descriptors for async-signal-safe communication
+static PIPE_READ_FD: AtomicI32 = AtomicI32::new(-1);
+static PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Async-signal-safe error logging to STDERR
+/// This function can be safely called from signal handlers
+fn log_to_stderr(msg: &[u8]) {
+    unsafe {
+        libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const libc::c_void, msg.len());
+    }
+}
+
+/// Initialize the pipe for async-signal-safe communication
+/// Returns Ok(()) if pipe is created successfully, Err otherwise
+pub fn init_pipe() -> Result<()> {
+    let mut fds: [i32; 2] = [-1, -1];
+    
+    let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    
+    if ret != 0 {
+        let errno = unsafe { *libc::__errno_location() };
+        let error_msg = format!(
+            "[ERROR] stack_tracer::init_pipe: Failed to create pipe, errno={}\n",
+            errno
+        );
+        log_to_stderr(error_msg.as_bytes());
+        return Err(anyhow::anyhow!("Failed to create pipe, errno={}", errno));
+    }
+    
+    PIPE_READ_FD.store(fds[0], Ordering::SeqCst);
+    PIPE_WRITE_FD.store(fds[1], Ordering::SeqCst);
+    
+    Ok(())
+}
+
+/// Read raw frames from the pipe
+/// This function performs error checking and logs failures to STDERR
+pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
+    let read_fd = PIPE_READ_FD.load(Ordering::SeqCst);
+    
+    // Check if pipe is initialized
+    if read_fd < 0 {
+        let error_msg = b"[ERROR] stack_tracer::read_raw_frames_from_pipe: Pipe not initialized\n";
+        log_to_stderr(error_msg);
+        return Err(anyhow::anyhow!("Pipe not initialized"));
+    }
+    
+    // Poll the pipe for readability
+    let mut pollfd = libc::pollfd {
+        fd: read_fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    
+    let poll_ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+    
+    if poll_ret < 0 {
+        let errno = unsafe { *libc::__errno_location() };
+        let error_msg = format!(
+            "[ERROR] stack_tracer::read_raw_frames_from_pipe: poll() failed, errno={}\n",
+            errno
+        );
+        log_to_stderr(error_msg.as_bytes());
+        return Err(anyhow::anyhow!("poll() failed, errno={}", errno));
+    }
+    
+    if poll_ret == 0 {
+        let error_msg = b"[WARN] stack_tracer::read_raw_frames_from_pipe: poll() timeout\n";
+        log_to_stderr(error_msg);
+        return Err(anyhow::anyhow!("poll() timeout"));
+    }
+    
+    // Read the frame count first (4 bytes)
+    let mut frame_count_bytes = [0u8; 4];
+    let read_ret = unsafe {
+        libc::read(
+            read_fd,
+            frame_count_bytes.as_mut_ptr() as *mut libc::c_void,
+            4,
+        )
+    };
+    
+    if read_ret < 0 {
+        let errno = unsafe { *libc::__errno_location() };
+        let error_msg = format!(
+            "[ERROR] stack_tracer::read_raw_frames_from_pipe: read() failed for frame count, errno={}\n",
+            errno
+        );
+        log_to_stderr(error_msg.as_bytes());
+        return Err(anyhow::anyhow!("read() failed for frame count, errno={}", errno));
+    }
+    
+    if read_ret != 4 {
+        let error_msg = format!(
+            "[ERROR] stack_tracer::read_raw_frames_from_pipe: short read for frame count, expected 4 bytes, got {}\n",
+            read_ret
+        );
+        log_to_stderr(error_msg.as_bytes());
+        return Err(anyhow::anyhow!("short read for frame count, expected 4 bytes, got {}", read_ret));
+    }
+    
+    let frame_count = u32::from_le_bytes(frame_count_bytes);
+    
+    // Validate frame count
+    if frame_count == 0 {
+        let error_msg = b"[WARN] stack_tracer::read_raw_frames_from_pipe: frame count is 0\n";
+        log_to_stderr(error_msg);
+        return Err(anyhow::anyhow!("frame count is 0"));
+    }
+    
+    if frame_count > 10000 {
+        let error_msg = format!(
+            "[ERROR] stack_tracer::read_raw_frames_from_pipe: frame count {} exceeds maximum (10000)\n",
+            frame_count
+        );
+        log_to_stderr(error_msg.as_bytes());
+        return Err(anyhow::anyhow!("frame count {} exceeds maximum", frame_count));
+    }
+    
+    // Read the actual frame data
+    let data_size = frame_count as usize;
+    let mut buffer = vec![0u8; data_size];
+    
+    let read_ret = unsafe {
+        libc::read(
+            read_fd,
+            buffer.as_mut_ptr() as *mut libc::c_void,
+            data_size,
+        )
+    };
+    
+    if read_ret < 0 {
+        let errno = unsafe { *libc::__errno_location() };
+        let error_msg = format!(
+            "[ERROR] stack_tracer::read_raw_frames_from_pipe: read() failed for frame data, errno={}\n",
+            errno
+        );
+        log_to_stderr(error_msg.as_bytes());
+        return Err(anyhow::anyhow!("read() failed for frame data, errno={}", errno));
+    }
+    
+    if read_ret as usize != data_size {
+        let error_msg = format!(
+            "[ERROR] stack_tracer::read_raw_frames_from_pipe: short read for frame data, expected {} bytes, got {}\n",
+            data_size, read_ret
+        );
+        log_to_stderr(error_msg.as_bytes());
+        return Err(anyhow::anyhow!("short read for frame data, expected {} bytes, got {}", data_size, read_ret));
+    }
+    
+    Ok(buffer)
+}
 
 #[async_trait]
 pub trait StackTracer: Send + Sync + std::fmt::Debug {
@@ -188,10 +342,14 @@ pub fn backtrace_signal_handler() {
     let native_stacks = SignalTracer::get_native_stacks().unwrap_or_default();
     let python_stacks = get_python_stacks_raw();
     if SignalTracer::send_frames(native_stacks).is_err() {
-        log::error!("Signal handler: CRITICAL - Failed to send native stacks. Receiver might timeout or get incomplete data.");
+        // Use async-signal-safe logging instead of log::error!
+        let error_msg = b"[ERROR] backtrace_signal_handler: Failed to send native stacks. Receiver might timeout or get incomplete data.\n";
+        log_to_stderr(error_msg);
     }
     if SignalTracer::send_frames(python_stacks).is_err() {
-        log::error!("Signal handler: CRITICAL - Failed to send Python stacks. Receiver might timeout or get incomplete data.");
+        // Use async-signal-safe logging instead of log::error!
+        let error_msg = b"[ERROR] backtrace_signal_handler: Failed to send Python stacks. Receiver might timeout or get incomplete data.\n";
+        log_to_stderr(error_msg);
     }
 }
 
@@ -200,3 +358,68 @@ static BACKTRACE_MUTEX: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync:
 
 pub static NATIVE_CALLSTACK_SENDER_SLOT: Lazy<Mutex<Option<mpsc::Sender<Vec<CallFrame>>>>> =
     Lazy::new(|| Mutex::new(None));
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init_pipe_success() {
+        // Initialize the pipe
+        let result = init_pipe();
+        assert!(result.is_ok(), "init_pipe should succeed");
+        
+        // Verify that the file descriptors are set
+        let read_fd = PIPE_READ_FD.load(Ordering::SeqCst);
+        let write_fd = PIPE_WRITE_FD.load(Ordering::SeqCst);
+        
+        assert!(read_fd >= 0, "Read FD should be valid");
+        assert!(write_fd >= 0, "Write FD should be valid");
+        
+        // Clean up
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+        PIPE_READ_FD.store(-1, Ordering::SeqCst);
+        PIPE_WRITE_FD.store(-1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn test_read_raw_frames_from_pipe_not_initialized() {
+        // Ensure pipe is not initialized
+        PIPE_READ_FD.store(-1, Ordering::SeqCst);
+        
+        // Try to read from uninitialized pipe
+        let result = read_raw_frames_from_pipe(100);
+        assert!(result.is_err(), "Should fail when pipe is not initialized");
+        assert!(result.unwrap_err().to_string().contains("not initialized"));
+    }
+
+    #[test]
+    fn test_read_raw_frames_from_pipe_timeout() {
+        // Initialize the pipe
+        init_pipe().expect("Failed to init pipe");
+        
+        // Try to read with a short timeout (pipe is empty)
+        let result = read_raw_frames_from_pipe(10);
+        assert!(result.is_err(), "Should timeout when no data is available");
+        
+        // Clean up
+        let read_fd = PIPE_READ_FD.load(Ordering::SeqCst);
+        let write_fd = PIPE_WRITE_FD.load(Ordering::SeqCst);
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+        PIPE_READ_FD.store(-1, Ordering::SeqCst);
+        PIPE_WRITE_FD.store(-1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn test_log_to_stderr() {
+        // This test just ensures log_to_stderr doesn't panic
+        // In a real scenario, we'd capture STDERR to verify output
+        log_to_stderr(b"Test error message\n");
+    }
+}

@@ -172,7 +172,6 @@ pub fn backtrace_signal_handler() {
             libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
         }
         return; // Exceeded max frames, avoid partial data
-        }
     }
     
     // Write count as u32 (4 bytes)

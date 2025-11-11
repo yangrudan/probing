@@ -163,6 +163,18 @@ pub fn backtrace_signal_handler() {
         });
     }
     
+    if count > MAX_FRAMES {
+        unsafe {
+            let msg = format!(
+                "Backtrace signal handler: Frame count exceeds limit ({} > {})\n",
+                count, MAX_FRAMES
+            );
+            libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
+        }
+        return; // Exceeded max frames, avoid partial data
+        }
+    }
+    
     // Write count as u32 (4 bytes)
     let count_u32 = count as u32;
     let count_bytes = count_u32.to_ne_bytes();

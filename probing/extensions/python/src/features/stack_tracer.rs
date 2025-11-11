@@ -139,6 +139,10 @@ pub fn backtrace_signal_handler() {
     // Signal-safe backtrace collection
     let write_fd = PIPE_WRITE_FD.load(Ordering::SeqCst);
     if write_fd < 0 {
+        unsafe {
+            let msg = b"Backtrace signal handler: pipe not initialized\n";
+            libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
+        }
         return; // Pipe not initialized, cannot send data
     }
     
@@ -169,6 +173,13 @@ pub fn backtrace_signal_handler() {
     };
     
     if written != 4 {
+        unsafe {
+            let msg = format!(
+                "Backtrace signal handler: Failed to write frame count (errno={})\n",
+                *libc::__errno_location()
+            );
+            libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
+        }
         return; // Failed to write count, abort
     }
     
@@ -183,6 +194,13 @@ pub fn backtrace_signal_handler() {
         };
         
         if written != addr_size as isize {
+            unsafe {
+                let msg = format!(
+                    "Backtrace signal handler: Failed to write frame {} (errno={})\n",
+                    i, *libc::__errno_location()
+                );
+                libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
+            }
             return; // Failed to write frame, abort to prevent partial data
         }
     }

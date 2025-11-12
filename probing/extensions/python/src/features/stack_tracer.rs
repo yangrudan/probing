@@ -20,7 +20,7 @@ static PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Async-signal-safe error logging to STDERR
 /// This function can be safely called from signal handlers
-fn log_to_stderr(msg: &[u8]) {
+fn log_to_stderr(msg: &str) {
     unsafe {
         libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const libc::c_void, msg.len());
     }
@@ -39,7 +39,7 @@ pub fn init_pipe() -> Result<()> {
             "[ERROR] stack_tracer::init_pipe: Failed to create pipe, errno={}\n",
             errno
         );
-        log_to_stderr(error_msg.as_bytes());
+        log_to_stderr(&error_msg);
         return Err(anyhow::anyhow!("Failed to create pipe, errno={}", errno));
     }
     
@@ -56,7 +56,7 @@ pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
     
     // Check if pipe is initialized
     if read_fd < 0 {
-        let error_msg = b"[ERROR] stack_tracer::read_raw_frames_from_pipe: Pipe not initialized\n";
+        let error_msg = "[ERROR] stack_tracer::read_raw_frames_from_pipe: Pipe not initialized\n";
         log_to_stderr(error_msg);
         return Err(anyhow::anyhow!("Pipe not initialized"));
     }
@@ -76,12 +76,12 @@ pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
             "[ERROR] stack_tracer::read_raw_frames_from_pipe: poll() failed, errno={}\n",
             errno
         );
-        log_to_stderr(error_msg.as_bytes());
+        log_to_stderr(&error_msg);
         return Err(anyhow::anyhow!("poll() failed, errno={}", errno));
     }
     
     if poll_ret == 0 {
-        let error_msg = b"[WARN] stack_tracer::read_raw_frames_from_pipe: poll() timeout\n";
+        let error_msg = "[WARN] stack_tracer::read_raw_frames_from_pipe: poll() timeout\n";
         log_to_stderr(error_msg);
         return Err(anyhow::anyhow!("poll() timeout"));
     }
@@ -102,7 +102,7 @@ pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
             "[ERROR] stack_tracer::read_raw_frames_from_pipe: read() failed for frame count, errno={}\n",
             errno
         );
-        log_to_stderr(error_msg.as_bytes());
+        log_to_stderr(&error_msg);
         return Err(anyhow::anyhow!("read() failed for frame count, errno={}", errno));
     }
     
@@ -111,7 +111,7 @@ pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
             "[ERROR] stack_tracer::read_raw_frames_from_pipe: short read for frame count, expected 4 bytes, got {}\n",
             read_ret
         );
-        log_to_stderr(error_msg.as_bytes());
+        log_to_stderr(&error_msg);
         return Err(anyhow::anyhow!("short read for frame count, expected 4 bytes, got {}", read_ret));
     }
     
@@ -119,7 +119,7 @@ pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
     
     // Validate frame count
     if frame_count == 0 {
-        let error_msg = b"[WARN] stack_tracer::read_raw_frames_from_pipe: frame count is 0\n";
+        let error_msg = "[WARN] stack_tracer::read_raw_frames_from_pipe: frame count is 0\n";
         log_to_stderr(error_msg);
         return Err(anyhow::anyhow!("frame count is 0"));
     }
@@ -129,7 +129,7 @@ pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
             "[ERROR] stack_tracer::read_raw_frames_from_pipe: frame count {} exceeds maximum (10000)\n",
             frame_count
         );
-        log_to_stderr(error_msg.as_bytes());
+        log_to_stderr(&error_msg);
         return Err(anyhow::anyhow!("frame count {} exceeds maximum", frame_count));
     }
     
@@ -151,7 +151,7 @@ pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
             "[ERROR] stack_tracer::read_raw_frames_from_pipe: read() failed for frame data, errno={}\n",
             errno
         );
-        log_to_stderr(error_msg.as_bytes());
+        log_to_stderr(&error_msg);
         return Err(anyhow::anyhow!("read() failed for frame data, errno={}", errno));
     }
     
@@ -160,7 +160,7 @@ pub fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<u8>> {
             "[ERROR] stack_tracer::read_raw_frames_from_pipe: short read for frame data, expected {} bytes, got {}\n",
             data_size, read_ret
         );
-        log_to_stderr(error_msg.as_bytes());
+        log_to_stderr(&error_msg);
         return Err(anyhow::anyhow!("short read for frame data, expected {} bytes, got {}", data_size, read_ret));
     }
     
@@ -343,12 +343,12 @@ pub fn backtrace_signal_handler() {
     let python_stacks = get_python_stacks_raw();
     if SignalTracer::send_frames(native_stacks).is_err() {
         // Use async-signal-safe logging instead of log::error!
-        let error_msg = b"[ERROR] backtrace_signal_handler: Failed to send native stacks. Receiver might timeout or get incomplete data.\n";
+        let error_msg = "[ERROR] backtrace_signal_handler: Failed to send native stacks. Receiver might timeout or get incomplete data.\n";
         log_to_stderr(error_msg);
     }
     if SignalTracer::send_frames(python_stacks).is_err() {
         // Use async-signal-safe logging instead of log::error!
-        let error_msg = b"[ERROR] backtrace_signal_handler: Failed to send Python stacks. Receiver might timeout or get incomplete data.\n";
+        let error_msg = "[ERROR] backtrace_signal_handler: Failed to send Python stacks. Receiver might timeout or get incomplete data.\n";
         log_to_stderr(error_msg);
     }
 }
@@ -420,6 +420,6 @@ mod tests {
     fn test_log_to_stderr() {
         // This test just ensures log_to_stderr doesn't panic
         // In a real scenario, we'd capture STDERR to verify output
-        log_to_stderr(b"Test error message\n");
+        log_to_stderr("Test error message\n");
     }
 }

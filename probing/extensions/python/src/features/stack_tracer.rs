@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::format;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Once;
 
@@ -139,10 +140,11 @@ pub fn backtrace_signal_handler() {
     // Signal-safe backtrace collection
     let write_fd = PIPE_WRITE_FD.load(Ordering::SeqCst);
     if write_fd < 0 {
-        unsafe {
-            let msg = b"Backtrace signal handler: pipe not initialized\n";
-            libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
-        }
+        let msg = format!(
+            "[ERROR] Backtrace signal handler: pipe not initialized, write_fd={}\n",
+            write_fd
+        );
+        signal_safe_log(msg.as_bytes());
         return; // Pipe not initialized, cannot send data
     }
     
@@ -164,13 +166,11 @@ pub fn backtrace_signal_handler() {
     }
     
     if count > MAX_FRAMES {
-        unsafe {
-            let msg = format!(
-                "Backtrace signal handler: Frame count exceeds limit ({} > {})\n",
-                count, MAX_FRAMES
-            );
-            libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
-        }
+        let msg = format!(
+            "[ERROR] Backtrace signal handler: Frame count exceeds limit ({} > {})\n",
+            count, MAX_FRAMES
+        );
+        signal_safe_log(msg.as_bytes());
         return; // Exceeded max frames, avoid partial data
     }
     
@@ -186,10 +186,10 @@ pub fn backtrace_signal_handler() {
     if written != 4 {
         unsafe {
             let msg = format!(
-                "Backtrace signal handler: Failed to write frame count (errno={})\n",
+                "[ERROR] Backtrace signal handler: Failed to write frame count (errno={})\n",
                 *libc::__errno_location()
             );
-            libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
+            signal_safe_log(msg.as_bytes());
         }
         return; // Failed to write count, abort
     }
@@ -207,10 +207,10 @@ pub fn backtrace_signal_handler() {
         if written != addr_size as isize {
             unsafe {
                 let msg = format!(
-                    "Backtrace signal handler: Failed to write frame {} (errno={})\n",
+                    "[ERROR] Backtrace signal handler: Failed to write frame {} (errno={})\n",
                     i, *libc::__errno_location()
                 );
-                libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const _, msg.len());
+                signal_safe_log(msg.as_bytes());
             }
             return; // Failed to write frame, abort to prevent partial data
         }
@@ -229,6 +229,15 @@ static PIPE_INIT: Once = Once::new();
 
 // Maximum number of frames to capture
 const MAX_FRAMES: usize = 512;
+
+
+///Async-signal-safe error log to stderr
+/// This function is signal-safe and can be used in a signal handler
+fn signal_safe_log(msg: &[u8]) {
+    unsafe {
+        libc::write(libc::STDERR_FILENO, msg.as_ptr() as *const libc::c_void, msg.len());
+    }
+}
 
 /// Initialize the pipe for signal-safe communication
 fn init_pipe() -> Result<()> {
@@ -376,4 +385,3 @@ fn resolve_frames(raw_frames: Vec<*mut libc::c_void>) -> Vec<CallFrame> {
     
     frames
 }
-

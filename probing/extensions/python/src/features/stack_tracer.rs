@@ -125,7 +125,7 @@ impl StackTracer for SignalTracer {
         // Read native frames from pipe (timeout in milliseconds)
         let native_raw_frames = read_raw_frames_from_pipe(2000)?;
         let native_frames = resolve_frames(native_raw_frames);
-        
+
         // Get Python frames directly
         let python_frames = get_python_stacks(tid).unwrap();
 
@@ -134,6 +134,44 @@ impl StackTracer for SignalTracer {
             native_frames,
         ))
     }
+}
+
+/// Helper function to write data to pipe in signal handler with EAGAIN check
+/// For non-blocking pipes, we report EAGAIN as an error immediately
+unsafe fn signal_safe_write_nonblocking(fd: i32, data: &[u8], context: &str) -> bool {
+    let mut total_written = 0;
+    let total = data.len();
+
+    // For non-blocking pipe in signal handler, we try to write all data
+    // If pipe is full, we fail immediately (which is desired behavior)
+    while total_written < total {
+        let written = libc::write(
+            fd,
+            data[total_written..].as_ptr() as *const libc::c_void,
+            total - total_written,
+        );
+
+        if written < 0 {
+            let errno = *libc::__errno_location();
+            let msg = if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+                format!(
+                    "[ERROR] Backtrace signal handler: Pipe buffer full (EAGAIN/EWOULDBLOCK) when writing {}\n",
+                    context
+                )
+            } else {
+                format!(
+                    "[ERROR] Backtrace signal handler: Failed to write {} (errno={})\n",
+                    context, errno
+                )
+            };
+            signal_safe_log(msg.as_bytes());
+            return false;
+        }
+
+        total_written += written as usize;
+    }
+
+    true
 }
 
 pub fn backtrace_signal_handler() {
@@ -147,11 +185,11 @@ pub fn backtrace_signal_handler() {
         signal_safe_log(msg.as_bytes());
         return; // Pipe not initialized, cannot send data
     }
-    
+
     // Pre-allocate buffer for frame addresses
     let mut buffer: [*mut libc::c_void; MAX_FRAMES] = [std::ptr::null_mut(); MAX_FRAMES];
     let mut count: usize = 0;
-    
+
     // Use trace_unsynchronized for async-signal-safe backtrace
     unsafe {
         backtrace::trace_unsynchronized(|frame| {
@@ -164,7 +202,7 @@ pub fn backtrace_signal_handler() {
             }
         });
     }
-    
+
     if count > MAX_FRAMES {
         let msg = format!(
             "[ERROR] Backtrace signal handler: Frame count exceeds limit ({} > {})\n",
@@ -173,46 +211,27 @@ pub fn backtrace_signal_handler() {
         signal_safe_log(msg.as_bytes());
         return; // Exceeded max frames, avoid partial data
     }
-    
+
     // Write count as u32 (4 bytes)
     let count_u32 = count as u32;
     let count_bytes = count_u32.to_ne_bytes();
-    
-    // Write count with error checking
-    let written = unsafe {
-        libc::write(write_fd, count_bytes.as_ptr() as *const libc::c_void, 4)
-    };
-    
-    if written != 4 {
-        unsafe {
-            let msg = format!(
-                "[ERROR] Backtrace signal handler: Failed to write frame count (errno={})\n",
-                *libc::__errno_location()
-            );
-            signal_safe_log(msg.as_bytes());
+
+    unsafe {
+        if !signal_safe_write_nonblocking(write_fd, &count_bytes, "frame count") {
+            return; // Failed to write count (pipe full or error), abort
         }
-        return; // Failed to write count, abort
     }
-    
+
     // Write frame addresses (using usize for consistency)
     let addr_size = std::mem::size_of::<usize>();
     for i in 0..count {
         let addr = buffer[i] as usize;
         let addr_bytes = addr.to_ne_bytes();
-        
-        let written = unsafe {
-            libc::write(write_fd, addr_bytes.as_ptr() as *const libc::c_void, addr_size)
-        };
-        
-        if written != addr_size as isize {
-            unsafe {
-                let msg = format!(
-                    "[ERROR] Backtrace signal handler: Failed to write frame {} (errno={})\n",
-                    i, *libc::__errno_location()
-                );
-                signal_safe_log(msg.as_bytes());
+
+        unsafe {
+            if !signal_safe_write_nonblocking(write_fd, &addr_bytes, &format!("frame {}", i)) {
+                return; // Failed to write frame (pipe full or error), abort to prevent partial data
             }
-            return; // Failed to write frame, abort to prevent partial data
         }
     }
 }
@@ -242,27 +261,89 @@ fn signal_safe_log(msg: &[u8]) {
 /// Initialize the pipe for signal-safe communication
 fn init_pipe() -> Result<()> {
     let mut result = Ok(());
-    
+
     PIPE_INIT.call_once(|| {
         let mut fds: [libc::c_int; 2] = [0, 0];
-        // Use O_CLOEXEC but not O_NONBLOCK to ensure writes don't fail in signal handler
-        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
-        
+        // Use O_CLOEXEC and O_NONBLOCK for non-blocking async pipe
+        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+
         if ret != 0 {
             result = Err(anyhow::anyhow!("Failed to create pipe: {}", std::io::Error::last_os_error()));
             return;
         }
-        
+
         PIPE_READ_FD.store(fds[0], Ordering::SeqCst);
         PIPE_WRITE_FD.store(fds[1], Ordering::SeqCst);
     });
-    
+
     // Check if initialization succeeded
     if PIPE_READ_FD.load(Ordering::SeqCst) < 0 {
         return Err(anyhow::anyhow!("Pipe initialization failed"));
     }
-    
+
     result
+}
+
+/// Helper function to check if error is EAGAIN/EWOULDBLOCK
+fn is_would_block_error(errno: i32) -> bool {
+    errno == libc::EAGAIN || errno == libc::EWOULDBLOCK
+}
+
+/// Helper function to read exact amount of bytes from non-blocking pipe
+/// Uses poll() to wait for data availability before each read
+fn read_exact_from_nonblocking_pipe(fd: i32, buf: &mut [u8], timeout_ms: i32, context: &str) -> Result<()> {
+    let mut bytes_read = 0;
+    let total = buf.len();
+
+    while bytes_read < total {
+        // Poll to wait for data availability
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+
+        let poll_ret = unsafe { libc::poll(&mut pollfd as *mut libc::pollfd, 1, timeout_ms) };
+
+        if poll_ret < 0 {
+            return Err(anyhow::anyhow!("Poll failed when reading {}: {}", context, std::io::Error::last_os_error()));
+        }
+
+        if poll_ret == 0 {
+            return Err(anyhow::anyhow!("Timeout waiting for {} (read {} of {} bytes)", context, bytes_read, total));
+        }
+
+        // Try to read available data
+        let n = unsafe {
+            libc::read(
+                fd,
+                buf[bytes_read..].as_mut_ptr() as *mut libc::c_void,
+                total - bytes_read,
+            )
+        };
+
+        if n < 0 {
+            let errno = std::io::Error::last_os_error();
+            let raw_errno = errno.raw_os_error().unwrap_or(0);
+
+            // For non-blocking pipe, EAGAIN after successful poll is unexpected but possible
+            // (race condition: data consumed between poll and read)
+            if is_would_block_error(raw_errno) {
+                // Retry the loop - poll again
+                continue;
+            }
+
+            return Err(anyhow::anyhow!("Failed to read {} at offset {}: {}", context, bytes_read, errno));
+        }
+
+        if n == 0 {
+            return Err(anyhow::anyhow!("Unexpected EOF while reading {} (read {} of {} bytes)", context, bytes_read, total));
+        }
+
+        bytes_read += n as usize;
+    }
+
+    Ok(())
 }
 
 /// Read raw frame addresses from the pipe
@@ -271,71 +352,24 @@ fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<*mut libc::c_void>> 
     if read_fd < 0 {
         return Err(anyhow::anyhow!("Pipe not initialized"));
     }
-    
-    // Use libc::poll to wait for data with timeout
-    let mut pollfd = libc::pollfd {
-        fd: read_fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    
-    let poll_ret = unsafe { libc::poll(&mut pollfd as *mut libc::pollfd, 1, timeout_ms) };
-    
-    if poll_ret < 0 {
-        return Err(anyhow::anyhow!("Poll failed: {}", std::io::Error::last_os_error()));
-    }
-    
-    if poll_ret == 0 {
-        return Err(anyhow::anyhow!("Timeout waiting for backtrace data"));
-    }
-    
+
     // First read the count (u32 = 4 bytes)
     let mut count_buf = [0u8; 4];
-    let count_bytes_read = unsafe {
-        libc::read(read_fd, count_buf.as_mut_ptr() as *mut libc::c_void, 4)
-    };
-    
-    if count_bytes_read < 0 {
-        return Err(anyhow::anyhow!("Failed to read frame count: {}", std::io::Error::last_os_error()));
-    }
-    
-    if count_bytes_read != 4 {
-        return Err(anyhow::anyhow!("Incomplete frame count read"));
-    }
-    
+    read_exact_from_nonblocking_pipe(read_fd, &mut count_buf, timeout_ms, "frame count")?;
+
     let count = u32::from_ne_bytes(count_buf) as usize;
-    
+
     if count > MAX_FRAMES {
         return Err(anyhow::anyhow!("Frame count exceeds maximum: {}", count));
     }
-    
+
     // Read frame addresses (count * sizeof(usize))
-    // Use size_of::<usize> consistently as addresses are serialized as usize
     let addr_size = std::mem::size_of::<usize>();
     let total_bytes = count * addr_size;
     let mut buffer = vec![0u8; total_bytes];
-    
-    let mut bytes_read = 0;
-    while bytes_read < total_bytes {
-        let n = unsafe {
-            libc::read(
-                read_fd,
-                buffer[bytes_read..].as_mut_ptr() as *mut libc::c_void,
-                total_bytes - bytes_read,
-            )
-        };
-        
-        if n < 0 {
-            return Err(anyhow::anyhow!("Failed to read frame data: {}", std::io::Error::last_os_error()));
-        }
-        
-        if n == 0 {
-            return Err(anyhow::anyhow!("Unexpected EOF while reading frames"));
-        }
-        
-        bytes_read += n as usize;
-    }
-    
+
+    read_exact_from_nonblocking_pipe(read_fd, &mut buffer, timeout_ms, "frame data")?;
+
     // Convert bytes to frame addresses
     let mut frames = Vec::with_capacity(count);
     for i in 0..count {
@@ -345,18 +379,18 @@ fn read_raw_frames_from_pipe(timeout_ms: i32) -> Result<Vec<*mut libc::c_void>> 
         let addr = usize::from_ne_bytes(addr_bytes);
         frames.push(addr as *mut libc::c_void);
     }
-    
+
     Ok(frames)
 }
 
 /// Resolve raw frame addresses to CallFrame structures
 fn resolve_frames(raw_frames: Vec<*mut libc::c_void>) -> Vec<CallFrame> {
     let mut frames = vec![];
-    
+
     for frame_ptr in raw_frames {
         let ip = frame_ptr;
         let symbol_address = frame_ptr;
-        
+
         backtrace::resolve(ip, |symbol| {
             let func_name = symbol
                 .name()
@@ -382,6 +416,6 @@ fn resolve_frames(raw_frames: Vec<*mut libc::c_void>) -> Vec<CallFrame> {
             });
         });
     }
-    
+
     frames
 }

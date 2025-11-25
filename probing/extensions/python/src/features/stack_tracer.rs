@@ -122,13 +122,13 @@ impl StackTracer for SignalTracer {
             return Err(anyhow::anyhow!(error_msg));
         }
 
-        // Read native frames from pipe (timeout in milliseconds)
-        let native_raw_frames = read_raw_frames_from_pipe(2000)?;
-        let native_frames = resolve_frames(native_raw_frames);
-
         // Get Python frames directly
         let python_frames = get_python_stacks(tid).unwrap();
 
+        // Read native frames from pipe (timeout in milliseconds)
+        let native_raw_frames = read_raw_frames_from_pipe(2000)?;
+        let native_frames = resolve_frames(native_raw_frames);
+        
         Ok(Self::merge_python_native_stacks(
             python_frames,
             native_frames,

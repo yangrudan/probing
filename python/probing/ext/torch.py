@@ -38,12 +38,12 @@ def collective_hook():
 
     import os
     enble = os.getenv("PB_COLL_TRACE", "False") # set to True to enable collective profiling
-    trace_verbose = os.getenv("PB_COLL_TRACE_VERBOSE", "False")  # set to True to see the detailed trace output
 
     if is_true(enble):
-        from collective_trace import trace_all_collectives
+        from run_daemon import run_daemon, stop_daemon
 
-        trace_all_collectives(verbose=is_true(trace_verbose))
+        # Start the monitoring daemon
+        run_daemon()
 
 def init():
     from torch.optim.optimizer import register_optimizer_step_post_hook

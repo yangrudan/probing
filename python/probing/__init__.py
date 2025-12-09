@@ -54,7 +54,12 @@ def initialize_probing():
 
 initialize_probing()
 
+# Import hooks must be installed early to intercept module imports (e.g., torch)
 import probing.hooks.import_hook
+
+# Import inspect module to make inspection utilities available
+# Note: This will load probing.inspect.torch, but torch itself is only imported
+# when torch inspection functions are actually called (lazy import)
 import probing.inspect
 
 from probing.core.engine import query

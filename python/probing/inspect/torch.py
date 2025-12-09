@@ -1,3 +1,42 @@
+"""
+PyTorch Object Inspection Module
+
+This module provides functionality to track and inspect PyTorch objects (Tensors, 
+Modules, and Optimizers) in memory using weak references.
+
+WHEN IS THIS MODULE LOADED?
+---------------------------
+This module is automatically imported when you `import probing` due to the 
+import chain:
+    import probing 
+    -> probing/__init__.py imports probing.inspect
+    -> probing/inspect/__init__.py imports from .torch
+
+However, PyTorch itself is only imported lazily when the inspection functions 
+are actually called. This means:
+- No overhead if PyTorch is installed but not used
+- Probing works without PyTorch; torch features simply fail if invoked
+
+USAGE
+-----
+1. Direct Python API:
+    from probing.inspect import get_torch_modules, get_torch_tensors
+    modules = get_torch_modules()
+    tensors = get_torch_tensors()
+
+2. IPython Magic Commands:
+    %get_torch_tensors limit=10
+    %get_torch_modules toplevel=True
+
+3. SQL Query Interface:
+    SELECT * FROM python.probing.inspect.get_torch_modules()
+
+CACHE BEHAVIOR
+--------------
+- Caches are NOT populated on module load
+- Automatic refresh every 5 minutes when inspection functions are called
+- Uses weak references to avoid preventing garbage collection
+"""
 import weakref
 import time
 

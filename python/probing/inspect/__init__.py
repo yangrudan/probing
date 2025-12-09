@@ -1,3 +1,8 @@
+# Import torch inspection functions
+# Note: This loads the torch.py module immediately, but PyTorch itself
+# is only imported when these functions are actually called (lazy import).
+# This allows probing to be used without PyTorch installed, and torch-specific
+# features only fail if explicitly invoked.
 from .torch import get_torch_modules
 from .torch import get_torch_tensors
 from .torch import get_torch_optimizers

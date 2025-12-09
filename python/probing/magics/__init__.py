@@ -15,10 +15,10 @@ from typing import Union, List, Optional
 from dataclasses import dataclass, field, asdict
 import json
 
-from .torch_magic import TorchMagic
+# from .torch_magic import TorchMagic
 from .debug_magic import DebugMagic
 from .stack_magic import StackMagic
-from .handle_magic import HandleMagic
+# from .handle_magic import HandleMagic
 
 
 @dataclass
@@ -117,10 +117,10 @@ class CodeExecutor:
 
         if self.km.has_kernel:
             shell = self.km.kernel.shell
-            shell.register_magics(TorchMagic(shell=shell))
+            # shell.register_magics(TorchMagic(shell=shell))
             shell.register_magics(DebugMagic(shell=shell))
             shell.register_magics(StackMagic(shell=shell))
-            shell.register_magics(HandleMagic(shell=shell))
+            # shell.register_magics(HandleMagic(shell=shell))
 
     def execute(self, code_or_request: Union[str, dict]) -> ExecutionResult:
         """Executes a string of code or a request dictionary in the kernel.

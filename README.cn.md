@@ -14,7 +14,10 @@ Probing的主要功能包括：
   - 支持Torch的profiling功能，分析模型性能；
 - 远程控制：
   - 提供HTTP接口，用于获取数据和控制目标进程执行；
-  - 支持远程注入任意Python代码至目标进程。
+  - 支持远程注入任意Python代码至目标进程；
+  - 内置IPython解释器，支持Magic命令（如`%tprofile`、`%bt`等）进行高级调试。
+
+> **技术说明**：Probing的REPL和代码执行功能使用进程内的IPython kernel替代标准CPython解释器，提供更强大的交互式调试能力。详见[Magics模块：IPython集成机制](docs/src/design/magics-ipython-integration.md)。
 
 相比其他调试与诊断工具，`probing`能够即插即用，可在任意时刻侵入目标进程，无需中断或重启，也无需修改代码。
 

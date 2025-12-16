@@ -126,6 +126,9 @@ The REPL provides:
 - **Live Variable Inspection**: Access all variables in the target process context
 - **Code Execution**: Run arbitrary Python code within the target process
 - **Real-time Debugging**: Set breakpoints and inspect state without stopping the process
+- **IPython Magic Commands**: Use powerful magic commands like `%tprofile`, `%bt`, `%dump_stack` for advanced debugging
+
+> **Technical Details**: The REPL uses an in-process IPython kernel instead of standard CPython, providing magic commands and enhanced features. See [Magics Module: IPython Integration](docs/src/design/magics-ipython-integration.md) for implementation details.
 
 ### Distributed Training Analysis
 ```bash

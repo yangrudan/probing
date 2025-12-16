@@ -12,6 +12,7 @@
 - [Profiling Implementation](design/profiling.md)
 - [Distributed Architecture](design/distributed.md)
 - [Extensibility Framework](design/extensibility.md)
+- [Magics Module: IPython Integration](design/magics-ipython-integration.md)
 
 ---
 

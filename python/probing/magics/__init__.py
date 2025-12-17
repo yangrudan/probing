@@ -8,17 +8,9 @@ state between executions, and defining custom "magic" commands.
 The results of executions are encapsulated in an `ExecutionResult` object,
 which can be easily serialized to JSON.
 """
-
-from ipykernel.inprocess.manager import InProcessKernelManager
-from jupyter_client.session import Session
 from typing import Union, List, Optional
 from dataclasses import dataclass, field, asdict
 import json
-
-# from .torch_magic import TorchMagic
-from .debug_magic import DebugMagic
-from .stack_magic import StackMagic
-# from .handle_magic import HandleMagic
 
 
 @dataclass
@@ -109,6 +101,13 @@ class CodeExecutor:
     """
 
     def __init__(self):
+        from ipykernel.inprocess.manager import InProcessKernelManager
+
+        from .torch_magic import TorchMagic
+        from .debug_magic import DebugMagic
+        from .stack_magic import StackMagic
+        from .handle_magic import HandleMagic
+
         self.km = InProcessKernelManager()
         self.km.start_kernel()
 

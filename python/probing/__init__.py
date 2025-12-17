@@ -1,4 +1,3 @@
-from .repl import DebugConsole
 from .trace import probe
 
 _ALL_ = [

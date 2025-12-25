@@ -40,7 +40,7 @@ def collective_hook():
     enble = os.getenv("PB_COLL_TRACE", "False") # set to True to enable collective profiling
 
     if is_true(enble):
-        from run_daemon import run_daemon, stop_daemon
+        from group_cc_hook import run_daemon, stop_daemon
 
         # Start the monitoring daemon
         run_daemon()

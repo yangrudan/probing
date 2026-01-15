@@ -16,7 +16,7 @@ where
 
 fn register_segvsignal_handler() -> nix::Result<()> {
     let sa = SigAction::new(
-        SigHandler::Handler(crate::features::stack_tracer::exit_segvsignal_handler),
+        SigHandler::Handler(crate::features::stack_tracer::exit_signal_handler_sigsegv),
         SaFlags::SA_RESTART,
         SigSet::empty()
     );
@@ -36,11 +36,11 @@ fn setup() {
     );
     register_signal_handler(
         nix::libc::SIGTERM,
-        crate::features::stack_tracer::exit_signal_handler,
+        crate::features::stack_tracer::exit_signal_handler_sigterm,
     );
     register_signal_handler(
         nix::libc::SIGUSR1,
-        crate::features::stack_tracer::exit_signal_handler,
+        crate::features::stack_tracer::exit_signal_handler_sigusr1,
     );
     // register_signal_handler(
     //     nix::libc::SIGABRT,

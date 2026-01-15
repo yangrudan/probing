@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fmt::format;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Once;
 
@@ -228,7 +227,6 @@ pub fn backtrace_signal_handler() {
     }
 
     // Write frame addresses (using usize for consistency)
-    let addr_size = std::mem::size_of::<usize>();
     for i in 0..count {
         let addr = buffer[i] as usize;
         let addr_bytes = addr.to_ne_bytes();
@@ -459,7 +457,7 @@ fn get_native_stacks() -> Option<Vec<CallFrame>> {
     Some(frames)
 }
 
-pub fn exit_signal_handler() {    
+pub fn exit_signal_handler(signum: i32) {    
     let pid = nix::unistd::getpid().as_raw(); // PID of the current process (thread group ID)
 
     // Get rank number, use "unknown" if retrieval fails
@@ -504,13 +502,34 @@ pub fn exit_signal_handler() {
         .and_then(|mut file| file.write_all(merged_str.as_bytes())) {
         log::error!("Failed to write merged stack to file {}: {}", merged_file_name, e);
     } else {
+        let signal_name = match signum {
+            nix::libc::SIGTERM => "SIGTERM(15)",
+            nix::libc::SIGUSR1 => "SIGUSR1(10)",
+            nix::libc::SIGABRT => "SIGABRT(6)",
+            nix::libc::SIGSEGV => "SIGSEGV(11)",
+            _ => "UNKNOWN SIGNAL",
+        };
+
         println!(
-            "[rank{}] exited signal recieved, merged stacks has been Successfully written to the directory {}", rank, output_dir
+            "[rank{}] Recieved exit signal: {}, merged stacks has been successfully written to the directory {}", 
+            rank, signal_name, output_dir
         );
     }
 }
 
-pub extern "C" fn exit_segvsignal_handler(_signum: libc::c_int) {
-    exit_signal_handler();
+pub fn exit_signal_handler_sigterm() {
+    exit_signal_handler(nix::libc::SIGTERM);
+}
+
+pub fn exit_signal_handler_sigusr1() {
+    exit_signal_handler(nix::libc::SIGUSR1);
+}
+
+pub fn exit_signal_handler_sigabrt() {
+    exit_signal_handler(nix::libc::SIGABRT);
+}
+
+pub extern "C" fn exit_signal_handler_sigsegv(_signum: libc::c_int) {
+    exit_signal_handler(_signum);
     std::process::exit(1);
 }

@@ -101,7 +101,7 @@ pub struct ExternalTable(Arc<Mutex<TimeSeries>>, usize);
 #[pymethods]
 impl ExternalTable {
     #[new]
-    #[pyo3(signature = (name, columns, chunk_size = 10000, discard_threshold = 20_000_000, discard_strategy = "BaseMemorySize".to_string()))]
+    #[pyo3(signature = (name, columns, chunk_size = 10, discard_threshold = 10, discard_strategy = "BaseElementCount".to_string()))]
     fn new(
         name: &str,
         columns: Vec<String>,

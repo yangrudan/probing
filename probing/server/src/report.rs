@@ -73,7 +73,7 @@ async fn request_remote(url: &str, node: Node) -> Result<String> {
     Ok(ureq::put(url)
         .config()
         .no_delay(true)
-        .timeout_global(Some(Duration::from_millis(100)))
+        .timeout_global(Some(Duration::from_millis(2000)))
         .build()
         .send_json(node)?
         .body_mut()

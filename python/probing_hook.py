@@ -61,7 +61,7 @@ if probe_value.startswith("init:"):
 
 def execute_init_script():
     if launched_by_torchrun():
-      if script_init is not None
+      if script_init is not None:
           with open(script_init, "r") as f:
             exec(f.read(), globals())
     else:

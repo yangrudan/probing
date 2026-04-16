@@ -28,17 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def launched_by_torchrun() -> bool:
-    try:
-        p = psutil.Process(os.getppid())
-        for _ in range(3):
-            if p.name() in ("torchrun", "python -m torch.distributed.run"):
-                return True
-            p = p.parent() if p.parent() else None
-            if p is None:
-                break
-    except Exception:
-        pass
-    return False
+    return "TORCHELASTIC_RUN_ID" in os.environ
 
 def get_current_script_name():
     """Get the name of the current running script."""

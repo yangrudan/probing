@@ -126,17 +126,23 @@ impl StackTracer for SignalTracer {
             return Err(anyhow::anyhow!(error_msg));
         }
 
-        // Get Python frames directly
-        let python_frames = get_python_stacks(tid).unwrap();
-
         // Read native frames from pipe (timeout in milliseconds)
         let native_raw_frames = read_raw_frames_from_pipe(2000)?;
         let native_frames = resolve_frames(native_raw_frames);
-        
-        Ok(Self::merge_python_native_stacks(
-            python_frames,
-            native_frames,
-        ))
+
+        // Get Python frames; on failure, degrade to native-only stack
+        match get_python_stacks(tid) {
+            Some(python_frames) => Ok(Self::merge_python_native_stacks(
+                python_frames,
+                native_frames,
+            )),
+            None => {
+                log::warn!(
+                    "Failed to get Python stacks for tid {tid}; falling back to native-only stack"
+                );
+                Ok(native_frames)
+            }
+        }
     }
 }
 
@@ -464,10 +470,15 @@ pub fn exit_signal_handler(signum: i32) {
     let rank = env::var("RANK").unwrap_or_else(|_| "unknown".to_string());
 
     let cpp_frames = get_native_stacks().unwrap_or_default();
-    let python_frames = get_python_stacks(pid);
-    let python_frames = python_frames.unwrap();
-
-    let merged_frames = SignalTracer::merge_python_native_stacks(python_frames, cpp_frames);
+    let merged_frames = match get_python_stacks(pid) {
+        Some(python_frames) => SignalTracer::merge_python_native_stacks(python_frames, cpp_frames),
+        None => {
+            log::warn!(
+                "Failed to get Python stacks for pid {pid}; falling back to native-only stack"
+            );
+            cpp_frames
+        }
+    };
 
     // Convert merged stack information to string
     let merged_str = serde_json::to_string_pretty(&merged_frames)

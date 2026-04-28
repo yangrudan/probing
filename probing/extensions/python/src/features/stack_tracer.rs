@@ -40,20 +40,54 @@ impl SignalTracer {
         }
 
         fn get_merge_strategy(frame: &CallFrame) -> MergeType {
+            // Prefixes (after splitting symbol on '_' / '.' and dropping empty
+            // tokens) that identify CPython-internal "glue" frames sitting
+            // between two `PyEval_EvalFrameDefault` invocations. Skipping them
+            // keeps the merged stack focused on user-visible Python/native
+            // frames instead of the interpreter plumbing used for every call.
             lazy_static! {
-                static ref WHITELISTED_PREFIXES_SET: HashSet<&'static str> = {
+                static ref IGNORED_PREFIXES_SET: HashSet<&'static str> = {
                     const PREFIXES: &[&str] = &[
-                        "time",
-                        "sys",
-                        "gc",
-                        "os",
-                        "unicode",
-                        "thread",
-                        "stringio",
-                        "sre",
+                        // Generic object call machinery
+                        "PyObject",
+                        "PyVectorcall",
+                        "PyCFunction",
+                        "PyMethodDescr",
+                        "PyMethod",
+                        "PyFunction",
+                        "PyCMethod",
+                        "PyArg",
+                        // Lower-case helpers used by ceval / object protocol
+                        "vectorcall",
+                        "method",
+                        "cfunction",
+                        "function",
+                        "builtin",
+                        "slot",
+                        "call",
+                        "do",
+                        "trace",
+                        "wrap",
+                        "type",
+                        "descr",
+                        "classmethoddescr",
+                        "methoddescr",
+                        // GIL / threading plumbing
                         "PyGilState",
                         "PyThread",
+                        "PyThreadState",
+                        "take",
+                        "drop",
                         "lock",
+                        // Frame / eval helpers other than EvalFrameDefault/Ex
+                        "PyFrame",
+                        // Interpreter entry plumbing between main and <module>
+                        // (pythonrun.c / main.c). Keep top-level entries like
+                        // `Py_BytesMain` / `Py_RunMain` visible by only
+                        // filtering the more specific prefixes here.
+                        "PyRun",
+                        "pyrun",
+                        "pymain",
                     ];
                     PREFIXES.iter().cloned().collect()
                 };
@@ -68,9 +102,7 @@ impl SignalTracer {
                     Some("EvalFrameDefault" | "EvalFrameEx") => MergeType::MergePythonFrame,
                     _ => MergeType::Ignore,
                 },
-                Some(prefix) if WHITELISTED_PREFIXES_SET.contains(prefix) => {
-                    MergeType::MergeNativeFrame
-                }
+                Some(prefix) if IGNORED_PREFIXES_SET.contains(prefix) => MergeType::Ignore,
                 _ => MergeType::MergeNativeFrame,
             }
         }

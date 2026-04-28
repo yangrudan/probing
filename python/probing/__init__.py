@@ -6,7 +6,7 @@ _ALL_ = [
     "DebugConsole",
 ]
 
-VERSION = "0.2.0"
+VERSION = "0.2.0-alpha2"
 
 
 def initialize_probing():

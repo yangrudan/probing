@@ -58,7 +58,7 @@ async fn report_worker(report_addr: String, local_addr: String) {
                     log::debug!("node status reported to {report_addr}: {reply:?}");
                 }
                 Err(err) => {
-                    log::error!("failed to report {node_display} to {report_addr}, {err}");
+                    log::debug!("failed to report {node_display} to {report_addr}, {err}");
                 }
             }
         }

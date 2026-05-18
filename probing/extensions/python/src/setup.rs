@@ -34,17 +34,17 @@ fn setup() {
         nix::libc::SIGUSR2,
         crate::features::stack_tracer::backtrace_signal_handler,
     );
-    register_signal_handler(
-        nix::libc::SIGTERM,
-        crate::features::stack_tracer::exit_signal_handler_sigterm,
-    );
-    register_signal_handler(
-        nix::libc::SIGUSR1,
-        crate::features::stack_tracer::exit_signal_handler_sigusr1,
-    );
     // register_signal_handler(
-    //     nix::libc::SIGABRT,
-    //     crate::features::stack_tracer::exit_signal_handler,
+    //     nix::libc::SIGTERM,
+    //     crate::features::stack_tracer::exit_signal_handler_sigterm,
     // );
-    register_segvsignal_handler();
+    // register_signal_handler(
+    //     nix::libc::SIGUSR1,
+    //     crate::features::stack_tracer::exit_signal_handler_sigusr1,
+    // );
+    // // register_signal_handler(
+    // //     nix::libc::SIGABRT,
+    // //     crate::features::stack_tracer::exit_signal_handler,
+    // // );
+    // register_segvsignal_handler();
 }

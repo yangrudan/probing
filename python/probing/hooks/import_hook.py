@@ -9,12 +9,9 @@ from probing.ext.iteroutput_hook import init as iteroutput_init
 from probing.ext.step_trace import init as step_trace_init
 from probing.ext.torch import init as torch_init
 
-# Register callbacks to trigger when torch package is imported
-register_module_callback("torch", step_trace_init)
-
 
 # Mapping from module names to callback functions
-register = {}
+register = {"torch": step_trace_init,}
 # Record modules that have been triggered
 triggered = {}
 

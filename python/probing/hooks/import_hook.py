@@ -6,7 +6,12 @@ from probing.ext.checkpoint_log import init as checkpoint_log_init
 from probing.ext.error_log import init as error_log_init
 from probing.ext.iter_log import init as iter_log_init
 from probing.ext.iteroutput_hook import init as iteroutput_init
+from probing.ext.step_trace import init as step_trace_init
 from probing.ext.torch import init as torch_init
+
+# Register callbacks to trigger when torch package is imported
+register_module_callback("torch", step_trace_init)
+
 
 # Mapping from module names to callback functions
 register = {}

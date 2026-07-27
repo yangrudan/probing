@@ -18,7 +18,7 @@ pub use exttbls::ExternalTable;
 pub use exttbls::PyExternalTableConfig;
 pub use tbls::PythonPlugin;
 
-use crate::features::stack_tracer::{SignalTracer, StackTracer};
+use crate::features::stack_tracer::{PythonStackTracer, StackTracer};
 use crate::python::enable_crash_handler;
 use crate::python::enable_monitoring;
 use crate::python::CRASH_HANDLER;
@@ -80,7 +80,7 @@ impl Default for PythonExt {
             monitoring: Default::default(),
             enabled: Default::default(),
             disabled: Default::default(),
-            tracer: Box::new(SignalTracer),
+            tracer: Box::new(PythonStackTracer),
         }
     }
 }
@@ -315,5 +315,5 @@ pub fn execute_python_code(code: &str) -> Result<pyo3::Py<pyo3::PyAny>, String> 
 }
 
 fn backtrace(tid: Option<i32>) -> Result<Vec<CallFrame>> {
-    SignalTracer.trace(tid)
+    PythonStackTracer.trace(tid)
 }

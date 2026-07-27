@@ -17,7 +17,7 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
 dependencies = [
- "cpp_demangle 0.4.4",
+ "cpp_demangle",
  "fallible-iterator",
  "gimli 0.32.3",
  "memmap2",
@@ -477,7 +477,6 @@ checksum = "8d82cb332cdfaed17ae235a638438ac4d4839913cc2af585c3c6746e8f8bee1a"
 dependencies = [
  "addr2line 0.24.2",
  "cfg-if",
- "cpp_demangle 0.4.4",
  "libc",
  "miniz_oxide",
  "object 0.36.7",
@@ -914,15 +913,6 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
-name = "cpp_demangle"
-version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeaa953eaad386a53111e47172c2fedba671e5684c8dd601a5f474f4f118710f"
-dependencies = [
- "cfg-if",
-]
 
 [[package]]
 name = "cpp_demangle"
@@ -3455,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "probing"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -3473,7 +3463,7 @@ dependencies = [
 
 [[package]]
 name = "probing-cc"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3489,7 +3479,7 @@ dependencies = [
 
 [[package]]
 name = "probing-cli"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "anyhow",
  "clap 4.5.38",
@@ -3513,7 +3503,7 @@ dependencies = [
 
 [[package]]
 name = "probing-core"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -3537,7 +3527,7 @@ dependencies = [
 
 [[package]]
 name = "probing-macros"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "probing-core",
  "quote",
@@ -3546,7 +3536,7 @@ dependencies = [
 
 [[package]]
 name = "probing-proto"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -3562,17 +3552,12 @@ dependencies = [
 
 [[package]]
 name = "probing-python"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "anyhow",
  "async-trait",
- "backtrace",
- "chrono",
- "cpp_demangle 0.3.5",
- "ctor",
  "include_dir",
  "inferno 0.12.3",
- "lazy_static",
  "log",
  "nix 0.30.1",
  "once_cell",
@@ -3585,13 +3570,12 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "serde_json",
- "signal-hook-registry",
  "tokio",
 ]
 
 [[package]]
 name = "probing-server"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "anyhow",
  "axum",
@@ -3617,7 +3601,7 @@ dependencies = [
 
 [[package]]
 name = "probing-store"
-version = "0.2.0-alpha1"
+version = "0.2.0-alpha2"
 dependencies = [
  "thiserror 2.0.12",
  "tokio",
@@ -3724,7 +3708,7 @@ dependencies = [
  "clap 3.2.25",
  "clap_complete",
  "console",
- "cpp_demangle 0.4.4",
+ "cpp_demangle",
  "ctrlc",
  "env_logger",
  "goblin",
@@ -4278,15 +4262,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "signal-hook-registry"
-version = "1.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9203b8055f63a2a00e2f593bb0510367fe707d7ff1e5c872de2f537b339e5410"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "simd-adler32"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4447,7 +4422,7 @@ version = "12.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "153faacda0d58dc1eb3e8bbd5dab998041e95bd7f4ab2caeeadc89410617f144"
 dependencies = [
- "cpp_demangle 0.4.4",
+ "cpp_demangle",
  "rustc-demangle",
  "symbolic-common",
 ]
